@@ -1,0 +1,154 @@
+
+name: Build DLL release
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Which client DLL(s) to build
+        type: choice
+        required: true
+        default: ds3
+        options:
+          - ds3
+          - sekiro
+          - both
+
+      release_tag:
+        description: Git tag for the release
+        type: string
+        required: true
+        default: jacobmix-ds3-v4.0.2r2
+
+      release_name:
+        description: Display name for the release
+        type: string
+        required: true
+        default: DS3 Archipelago 4.0.2r2 - Negative hint fix
+
+      prerelease:
+        description: Mark this release as a pre-release
+        type: boolean
+        required: true
+        default: true
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    name: Build and publish DLL(s)
+    runs-on: windows-2022
+
+    steps:
+      - name: Check out selected branch
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Show build environment
+        shell: pwsh
+        run: |
+          rustc +stable -Vv
+          cargo +stable -V
+          where.exe link.exe
+          Write-Host "MSVC toolset: $env:VCToolsVersion"
+
+      - name: Build selected DLL(s)
+        shell: pwsh
+        env:
+          BUILD_TARGET: ${{ inputs.target }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          RELEASE_NAME: ${{ inputs.release_name }}
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          # Validate release inputs
+          if ([string]::IsNullOrWhiteSpace($env:RELEASE_TAG)) {
+            throw "Release tag cannot be empty."
+          }
+
+          if ($env:RELEASE_TAG -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$' -or
+              $env:RELEASE_TAG.Contains("..") -or
+              $env:RELEASE_TAG.EndsWith(".") -or
+              $env:RELEASE_TAG.EndsWith(".lock")) {
+            throw "Invalid release tag."
+          }
+
+          if ([string]::IsNullOrWhiteSpace($env:RELEASE_NAME)) {
+            throw "Release name cannot be empty."
+          }
+
+          # Avoid triggering the existing full-release workflows
+          if ($env:RELEASE_TAG -match '^(ds3|sdt)-v') {
+            throw "Use a fork-specific tag prefix, e.g. jacobmix-ds3-v4.0.2r2."
+          }
+
+          # Select packages
+          $packages = switch ($env:BUILD_TARGET) {
+            "ds3"    { @("ds3-archipelago") }
+            "sekiro" { @("sdt-archipelago") }
+            "both"   { @("ds3-archipelago", "sdt-archipelago") }
+            default  { throw "Unknown build target." }
+          }
+
+          New-Item -ItemType Directory -Force -Path "release-assets" | Out-Null
+
+          # Build each selected package
+          foreach ($package in $packages) {
+
+            Write-Host "Building $package..."
+
+            cargo +stable build --locked --release -p $package
+
+            if ($LASTEXITCODE -ne 0) {
+              throw "Build failed for $package."
+            }
+
+            # Determine output DLL
+            if ($package -eq "ds3-archipelago") {
+              $dllName = "ds3_archipelago.dll"
+            }
+            else {
+              $dllName = "sdt_archipelago.dll"
+            }
+
+            $source = Join-Path $env:GITHUB_WORKSPACE "target\release\$dllName"
+            $destination = Join-Path $env:GITHUB_WORKSPACE "release-assets\$dllName"
+
+            if (!(Test-Path -LiteralPath $source)) {
+              throw "DLL not found: $source"
+            }
+
+            Copy-Item -LiteralPath $source -Destination $destination -Force
+
+            Write-Host "Prepared $dllName"
+          }
+
+          Write-Host "Build complete. Release assets:"
+          Get-ChildItem "release-assets"
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.release_tag }}
+          target_commitish: ${{ github.sha }}
+          name: ${{ inputs.release_name }}
+          prerelease: ${{ inputs.prerelease }}
+          make_latest: false
+          generate_release_notes: false
+          body: |
+            DLL-only build.
+
+            Target: ${{ inputs.target }}
+            Branch: ${{ github.ref_name }}
+            Commit: ${{ github.sha }}
+
+          files: release-assets/*.dll
+          fail_on_unmatched_files: true
