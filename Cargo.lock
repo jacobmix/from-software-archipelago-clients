@@ -55,9 +55,9 @@ checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
 name = "archipelago_rs"
-version = "2.1.1"
+version = "3.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5fc307204c7c97a628a1999d8731d69b29056af4f66872122f57d7c1ceec3b99"
+checksum = "f824b6faac01bc5bc1c4abfbe7fe8e81463033d0ebc63d7c9fa43d084695340a"
 dependencies = [
  "bitflags 2.11.1",
  "log",
