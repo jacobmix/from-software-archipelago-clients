@@ -7,7 +7,8 @@ use archipelago_rs::{self as ap, RichText};
 use darksouls3::{app_menu::*, cs::*, param::*, sprj::*};
 use fromsoftware_shared::{FromStatic, Superclass};
 use log::*;
-use regex_macro::regex;
+#[cfg(debug_assertions)] 	// Affects single use statement immediately after it.
+use regex_macro::regex; 	// Not used outside debug mode.
 
 use crate::item::{EquipParamExt, ItemIdExt};
 use crate::save_data::*;

@@ -5,7 +5,8 @@ use archipelago_rs as ap;
 use archipelago_rs::RichText;
 use fromsoftware_shared::FromStatic;
 use log::*;
-use regex_macro::regex;
+#[cfg(debug_assertions)] 	// Affects single use statement immediately after it.
+use regex_macro::regex; 	// Not used outside debug mode.
 use sekiro::sprj::*;
 
 use crate::item::{EquipParamExt, ItemIdExt};
