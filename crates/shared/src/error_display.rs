@@ -1,6 +1,11 @@
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex,
+};
 
 use anyhow::{Error, Result};
+use hudhook::{BeforeWndProc, ImguiRenderLoop, RenderContext};
+use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use hudhook::{ImguiRenderLoop, RenderContext};
 use imgui::*;
 
@@ -13,6 +18,10 @@ use crate::{Core, Game, InputBlocker, InputFlags, overlay::Overlay, utils::Popup
 pub(crate) struct ErrorDisplay<G: Game> {
     /// The struct that's used to block and unblock input going to the game.
     input_blocker: G::InputBlocker,
+
+    /// Whether the main HUD is currently visible. This is atomic because the
+    /// window-procedure callback and render loop may run on different threads.
+    hud_visible: AtomicBool,
 
     /// The main overlay if it managed to initialize correctly, or [None]
     /// otherwise.
@@ -36,6 +45,7 @@ impl<G: Game> ErrorDisplay<G> {
         match core {
             Ok(core) => Self {
                 input_blocker,
+                hud_visible: AtomicBool::new(true),
                 overlay: Some(Overlay::new()),
                 core: Some(core),
                 error: None,
@@ -43,6 +53,7 @@ impl<G: Game> ErrorDisplay<G> {
             },
             Err(error) => Self {
                 input_blocker,
+                hud_visible: AtomicBool::new(true),
                 overlay: None,
                 core: None,
                 error: Some(error),
@@ -97,25 +108,34 @@ impl<G: Game> ErrorDisplay<G> {
 
 impl<G: Game> ImguiRenderLoop for ErrorDisplay<G> {
     fn render(&mut self, ui: &mut Ui) {
+        let hud_visible = self.hud_visible.load(Ordering::Relaxed);
         let io = ui.io();
         let mut flag = InputFlags::empty();
-        if io.want_capture_mouse {
-            flag |= InputFlags::Mouse;
-        }
-        if io.want_capture_keyboard {
-            flag |= InputFlags::Keyboard;
-        }
-        if io.want_capture_mouse && io.want_capture_keyboard {
-            // Only block pad input if both the mouse and keyboard are blocked
-            // (for example if a modal dialog is up).
-            flag |= InputFlags::GamePad;
+
+        // When the HUD is hidden, release any input it had captured. Keep
+        // honoring ImGui's capture flags for the fatal-error popup, which is
+        // intentionally independent of HUD visibility.
+        if hud_visible || self.error.is_some() {
+            if io.want_capture_mouse {
+                flag |= InputFlags::Mouse;
+            }
+            if io.want_capture_keyboard {
+                flag |= InputFlags::Keyboard;
+            }
+            if io.want_capture_mouse && io.want_capture_keyboard {
+                // Only block pad input if both the mouse and keyboard are blocked
+                // (for example if a modal dialog is up).
+                flag |= InputFlags::GamePad;
+            }
         }
         self.input_blocker.block_only(flag);
 
         if let Some(core) = &mut self.core {
             let mut core = core.lock().unwrap();
-            if let Some(overlay) = &mut self.overlay {
-                overlay.render(ui, &mut core);
+            if hud_visible {
+                if let Some(overlay) = &mut self.overlay {
+                    overlay.render(ui, &mut core);
+                }
             }
 
             if self.error.is_none() {
@@ -124,6 +144,40 @@ impl<G: Game> ImguiRenderLoop for ErrorDisplay<G> {
         }
 
         self.render_error(ui);
+    }
+
+    /// Handle F1 before the game's window procedure. This works regardless of
+    /// whether the ImGui HUD is focused or currently visible, and prevents the
+    /// game itself from also receiving the toggle key.
+    fn before_wnd_proc(
+        &self,
+        _hwnd: HWND,
+        umsg: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+    ) -> BeforeWndProc {
+        const VK_F1: usize = 0x70;
+        const WM_KEYDOWN: u32 = 0x0100;
+        const WM_KEYUP: u32 = 0x0101;
+        const WM_SYSKEYDOWN: u32 = 0x0104;
+        const WM_SYSKEYUP: u32 = 0x0105;
+
+        if wparam.0 != VK_F1 {
+            return BeforeWndProc::Continue;
+        }
+
+        match umsg {
+            WM_KEYDOWN | WM_SYSKEYDOWN => {
+                // Bit 30 is set on key-down auto-repeat messages. Only toggle
+                // on the initial press, not while F1 is held down.
+                if lparam.0 & (1_isize << 30) == 0 {
+                    self.hud_visible.fetch_xor(true, Ordering::Relaxed);
+                }
+                BeforeWndProc::Break
+            }
+            WM_KEYUP | WM_SYSKEYUP => BeforeWndProc::Break,
+            _ => BeforeWndProc::Continue,
+        }
     }
 
     fn initialize<'a>(&'a mut self, ctx: &mut Context, _render_context: &'a mut dyn RenderContext) {
