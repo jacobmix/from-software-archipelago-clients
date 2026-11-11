@@ -6,7 +6,6 @@ use std::sync::{
 use anyhow::{Error, Result};
 use hudhook::{BeforeWndProc, ImguiRenderLoop, RenderContext};
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
-use hudhook::{ImguiRenderLoop, RenderContext};
 use imgui::*;
 
 use crate::{Core, Game, InputBlocker, InputFlags, overlay::Overlay, utils::PopupModalExt};
