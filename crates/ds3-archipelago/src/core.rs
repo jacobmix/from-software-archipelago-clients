@@ -220,6 +220,17 @@ impl shared::Core for Core {
 }
 
 impl Core {
+    /// Whether an ID embedded in a candidate Archipelago item is a real DS3 location.
+    ///
+    /// The DataPackage is already loaded and cached by archipelago_rs, so this
+    /// validates IDs without adding anything to slot data or making another request.
+    fn is_valid_archipelago_location(&self, location_id: i64) -> bool {
+        self.client().is_some_and(|client| {
+            client.this_game().has_data_package()
+                && client.this_game().has_location(location_id)
+        })
+    }
+
     /// Returns an error if there's a conflict between the notion of the current
     /// seed in the server, the save, and/or the config. Also updates the save
     /// data's notion based on whatever is available if it doesn't exist yet.
@@ -387,13 +398,23 @@ impl Core {
             }
 
             info!("Inventory contains Archipelago item {:?}", id);
-            let row = regulation_manager
-                .get_equip_param(id)
-                .unwrap_or_else(|| panic!("no row defined for Archipelago ID {:?}", id));
-            let row = row.as_dyn();
+            let Some(row) = regulation_manager.get_equip_param(id) else {
+                warn!("  No parameter row for candidate Archipelago item {:?}; leaving it alone", id);
+                continue;
+            };
+             let row = row.as_dyn();
+            let location_id = row.archipelago_location_id();
+            if !self.is_valid_archipelago_location(location_id) {
+                info!(
+                    "  Ignoring candidate item {:?}; location ID {} is not in the DS3 DataPackage",
+                    id,
+                    location_id
+                );
+                continue;
+            }
 
-            info!("  Archipelago location: {}", row.archipelago_location_id());
-            save_data.locations.insert(row.archipelago_location_id());
+            info!("  Archipelago location: {}", location_id);
+            save_data.locations.insert(location_id);
 
             if let EquipParamStruct::EQUIP_PARAM_GOODS_ST(good) = row.as_enum()
                 && good.icon_id() == 7039
@@ -483,17 +504,29 @@ impl Core {
             return Ok(());
         };
 
-        let locations = menu
-            .items()
-            .filter(|i| i.id.is_archipelago() && self.shop_items_hinted.insert(i.id))
-            .map(|i| {
-                regulation_manager
-                    .get_equip_param(i.id)
-                    .unwrap_or_else(|| panic!("no row defined for Archipelago ID {:?}", i.id))
-                    .as_dyn()
-                    .archipelago_location_id()
-            })
-            .collect::<Vec<_>>();
+        let mut locations = Vec::new();
+        for shop_item in menu.items() {
+            if !shop_item.id.is_archipelago() || self.shop_items_hinted.contains(&shop_item.id) {
+                continue;
+            }
+
+            let Some(row) = regulation_manager.get_equip_param(shop_item.id) else {
+                warn!("No parameter row for candidate Archipelago shop item {:?}", shop_item.id);
+                continue;
+            };
+            let location_id = row.as_dyn().archipelago_location_id();
+            if !self.is_valid_archipelago_location(location_id) {
+                info!(
+                    "Ignoring candidate shop item {:?}; location ID {} is not in the DS3 DataPackage",
+                    shop_item.id,
+                    location_id
+                );
+                continue;
+            }
+
+            self.shop_items_hinted.insert(shop_item.id);
+            locations.push(location_id);
+        }
         if !locations.is_empty()
             && let Some(client) = self.client_mut()
         {
